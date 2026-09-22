@@ -138,6 +138,11 @@ DeepSeek Harness（`dsh`）是 DeepSeek 官方开源的智能体框架，能直�
 5. **一键导出代码**：
    点击「导出城市工程」，复制生成的代码，然后直接在 DeepSeek Harness 里对 AI 说：“*请帮我把这些代码保存到对应城市目录*”，整网地铁图瞬间搞定！
 
+> 💡 **城市做好之后想改怎么办？** 同一个工作台就是编辑器。
+> 访问 `drunk/index.html?city={你的城市id}`（或在线路图「偏好设置 → 编辑此图」里点进去），
+> 就能把已经上线的城市读进画布，直接拖站、改字、调站名朝向，
+> 导出时**只会改写你动过的那几条**，其余内容一个字节都不会变。
+
 ---
 
 ## 第六步：实战教学 —— 指挥 DeepSeek Harness 帮你画地铁图
@@ -264,7 +269,7 @@ DeepSeek Harness（`dsh`）是 DeepSeek 官方开源的智能体框架，能直�
 - **扫码加入**：
 
 <p align="center">
-  <img src="./assets/images/qq.jpg" alt="QQ 交流群二维码" width="180" style="border-radius: 8px;">
+  <img src="./assets/images/qq.png" alt="QQ 交流群二维码" width="180" style="border-radius: 8px;">
 </p>
 
 祝你借助 DeepSeek Harness 和 CGo OpenMap 玩得开心！如有任何疑问，欢迎随时在群里或 GitHub Issue 交流讨论 🚇✨
