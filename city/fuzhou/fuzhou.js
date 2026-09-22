@@ -11,7 +11,7 @@
     const FuzhouCity = {
         id: "fuzhou",
         name: "福州",
-        themeColor: "#d7000f",
+        themeColor: "#079445",
         searchCity: "福州",
         center: { x: 1250, y: 800 },
         defaultScale: 1.0,
