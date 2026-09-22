@@ -204,9 +204,7 @@
             registerDate: "2026-09-16",
             officialMapUrl: "https://www.fzmtr.com/xlcx",
             status: "active",
-            maintainers: [
-                { name: "CRH1A-A-1186", role: "城市主理人", github: "https://github.com/CRH1A-A-1186" }
-            ],
+            maintainers: [],
             isDefault: false
         },
     };
