@@ -751,6 +751,84 @@ linesData.forEach((line) => {
     check(`${line.id} 徽标模板存在（${line.svg}）`, fs.existsSync(file), "缺少该模板");
 });
 
+/* ── 10. 城市专属模块 与 三处登记的一致性 ─────────────────────────── */
+section("⑩ 城市专属模块与登记一致性");
+{
+    /**
+     * 城市专属模块要同时在**三处**登记，任一处漏了都会静默失效：
+     *   ① city/fuzhou/fuzhou.js 的 stationBoard.scripts —— 不然根本不会被加载；
+     *   ② 同文件的 stationBoard.modules      —— 不然注册了也不渲染；
+     *   ③ sw.js 的 ASSETS_TO_CACHE           —— 不然离线时取不到。
+     * 本项目多次在这类「多处登记」上出错（徽标曾漏登记 HUB、SW 版本曾忘记递增），
+     * 故这里把三者对齐检查一遍：凡 modules 里启用的城市模块，三处都必须齐全。
+     */
+    const fuzhouSrc = fs.readFileSync(path.join(CITY_DIR, "fuzhou.js"), "utf8");
+    const swSrc = fs.readFileSync(path.join(ROOT, "sw.js"), "utf8");
+
+    const scripts = [...fuzhouSrc.matchAll(/"modules\/([a-z_]+\.js)"/g)].map((m) => m[1]);
+    check("stationBoard.scripts 非空", scripts.length > 0, `实际 ${scripts.length} 条`);
+
+    // ① scripts 里列的模块文件都要真实存在
+    const missingFile = scripts.filter((f) => !fs.existsSync(path.join(CITY_DIR, "modules", f)));
+    check("scripts 列的模块文件都存在", missingFile.length === 0, missingFile.join("、"));
+
+    // ③ scripts 里列的模块都要登记进 sw.js（离线可用）
+    const notInSw = scripts.filter((f) => !swSrc.includes(`./city/fuzhou/modules/${f}`));
+    check("scripts 列的模块都已登记进 sw.js", notInSw.length === 0,
+        `未登记：${notInSw.join("、")}`);
+
+    // ② modules 里启用的福州专属模块，其 id 要在对应模块文件里真实注册
+    const enabledIds = [...fuzhouSrc.matchAll(/"([a-z-]*fuzhou[a-z-]*)":\s*\{\s*enabled:\s*true/g)]
+        .map((m) => m[1]);
+    check("stationBoard.modules 列出福州专属模块", enabledIds.length > 0, `实际 ${enabledIds.length} 个`);
+
+    const moduleSrc = scripts
+        .map((f) => fs.readFileSync(path.join(CITY_DIR, "modules", f), "utf8")).join("\n");
+    const unregistered = enabledIds.filter((id) => !moduleSrc.includes(`id: "${id}"`));
+    check("modules 里启用的 id 都在模块文件中注册", unregistered.length === 0,
+        `未注册：${unregistered.join("、")}`);
+
+    // 机场联络只挂机场站，且内容为两座航站楼的分工
+    const airportModule = fs.existsSync(path.join(CITY_DIR, "modules", "fuzhou_airport.js"))
+        ? fs.readFileSync(path.join(CITY_DIR, "modules", "fuzhou_airport.js"), "utf8") : "";
+    check("机场联络模块存在", Boolean(airportModule), "缺 modules/fuzhou_airport.js");
+    if (airportModule) {
+        check("机场联络只挂机场站（BE02）", /"BE02"\s*:/.test(airportModule), "未按 BE02 索引");
+        ["1号航站楼", "2号航站楼", "厦门航空（MF）", "河北航空（NS）", "江西航空（RY）", "国际港澳台"]
+            .forEach((t) => check(`机场联络含「${t}」`, airportModule.includes(t), "缺该内容"));
+        // 铁律五：图标必须走 CGoUI
+        check("机场联络使用 cgo-icon", /<cgo-icon name="/.test(airportModule), "未使用 CGoUI 图标");
+    }
+
+    /**
+     * 国铁联络：三对「地铁站 → 国铁站」的对应关系。
+     * 地铁站名与国铁站名**并不一致**（福州火车站 ≠ 福州站），写错就会把乘客导向错误的车站，
+     * 故逐对钉住；并核对三站都是真实存在、且确实经停线路的站点。
+     */
+    const railModule = fs.existsSync(path.join(CITY_DIR, "modules", "fuzhou_railway.js"))
+        ? fs.readFileSync(path.join(CITY_DIR, "modules", "fuzhou_railway.js"), "utf8") : "";
+    check("国铁联络模块存在", Boolean(railModule), "缺 modules/fuzhou_railway.js");
+    if (railModule) {
+        const RAIL_PAIRS = [["M104", "福州站"], ["M121", "福州南站"], ["BE06", "长乐站"]];
+        RAIL_PAIRS.forEach(([sid, rail]) => {
+            const station = stationsData[sid];
+            check(`国铁联络目标站存在：${sid}`, Boolean(station), "车站数据里没有该 id");
+            check(`国铁联络 ${station ? station.cn : sid} → ${rail}`,
+                new RegExp(`"${sid}"\\s*:\\s*\\{\\s*rail:\\s*"${rail}"`).test(railModule),
+                `模块里未把 ${sid} 指向 ${rail}`);
+        });
+        // 不应把别的车站也挂上国铁联络（只此三站）
+        const idHits = [...railModule.matchAll(/"([A-Z]{1,3}\d{2,3})"\s*:\s*\{\s*rail:/g)].map((m) => m[1]);
+        check("国铁联络只登记三站", idHits.length === 3 && RAIL_PAIRS.every(([sid]) => idHits.includes(sid)),
+            `实际 ${idHits.length} 个：${idHits.join("、")}`);
+        check("国铁联络使用 cgo-icon", /<cgo-icon name="/.test(railModule), "未使用 CGoUI 图标");
+        check("国铁联络外链带 noopener", /rel="noopener/.test(railModule), "外链缺 rel=noopener");
+    }
+
+    process.stdout.write(`  模块：${scripts.join("、")}\n`);
+    process.stdout.write(`  启用：${enabledIds.join("、")}\n`);
+}
+
 /* ── 汇总 ─────────────────────────────────────────────────────────── */
 process.stdout.write(`\n${"─".repeat(60)}\n`);
 if (failures.length === 0) {

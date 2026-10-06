@@ -74,7 +74,9 @@
             scripts: [
                 "modules/fuzhou_timetable.js",
                 "modules/fuzhou_site_space.js",
-                "modules/fuzhou_cultural.js"
+                "modules/fuzhou_cultural.js",
+                "modules/fuzhou_airport.js",
+                "modules/fuzhou_railway.js"
             ],
             modules: {
                 "stacard": { enabled: true, order: 10, targetTab: "line-tab" },
@@ -82,7 +84,11 @@
                 // 文旅卡片：本站名胜指引 + 附近景点（点景点前往服务它的车站）
                 "fuzhou-cultural-tip": { enabled: true, order: 14, targetTab: "station-info" },
                 // 车站空间示意图与出入口是车站级资料（换乘站各线为同一张图），放在「车站信息」栏目
-                "fuzhou-station-space": { enabled: true, order: 15, targetTab: "station-info" }
+                "fuzhou-station-space": { enabled: true, order: 15, targetTab: "station-info" },
+                // 机场联络：只挂机场站（BE02），说明两座航站楼的步行距离与航司分工
+                "fuzhou-airport-tip": { enabled: true, order: 16, targetTab: "station-info" },
+                // 国铁联络：只挂与国铁直接接驳的三站（M104 福州站 / M121 福州南站 / BE06 长乐站）
+                "fuzhou-railway-tip": { enabled: true, order: 17, targetTab: "station-info" }
             }
         }
     };

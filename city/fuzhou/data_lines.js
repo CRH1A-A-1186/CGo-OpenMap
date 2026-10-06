@@ -104,7 +104,7 @@ const linesData = [
         name: "6号线",
         color: "#006AB7",
         svg: "icon@06.svg",
-        svgclr: "#0096b7",
+        svgclr: "#006ab7",
         svgtext: "#ffffff",
         company: "福州地铁",
         stationIds: ["M601", "M602", "M603", "M604", "M605", "M606", "M607", "M608", "M609", "M610", "M611", "M124", "M123", "M614", "M420", "M616"],
@@ -120,7 +120,8 @@ const linesData = [
     {
         id: "BE",
         name: "滨海快线",
-        color: "#009EBA",
+        /* 线路色与徽标底色（下方 svgclr）一致，均为 #18958D */
+        color: "#18958D",
         svg: "icon@fz_BE.svg",
         svgclr: "#18958d",
         svgtext: "#ffffff",
