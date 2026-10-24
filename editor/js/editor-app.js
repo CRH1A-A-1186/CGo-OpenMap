@@ -13,6 +13,7 @@
         activeLineId: null,
         isAutoRoute: true,
         gridVisible: false,
+        gridSize: 10,
         snapEnabled: true
     };
 
@@ -377,7 +378,7 @@
                     '自由注释文本', 'vi-text',
                     [
                         { label: '文本内容', value: txt.text || '' },
-                        { label: '基准坐标', value: '(' + Math.round(txt.x) + ', ' + Math.round(txt.y) + ')' },
+                        { label: '基准坐标', value: '(' + roundCoord(txt.x) + ', ' + roundCoord(txt.y) + ')' },
                         { label: '字体字号', value: (txt.size || 14) + 'px' + (txt.bold ? ' 粗体' : '') },
                         { label: '文本颜色', value: txt.color || '跟随主题' }
                     ],
@@ -408,6 +409,7 @@
                     { label: '自由注释', value: tList.length + ' 处' },
                     { label: '整体平移', value: '按住任一选中车站拖动，或使用方向键微调' },
                     { label: '步进快捷键', value: '方向键 1px，Shift + 方向键 10px' },
+                    { label: '等距排布', value: '选满 3 座以上后点下方「水平等距 / 垂直等距」：首尾两座不动，中间各站等分间距' },
                     { label: '取消多选', value: '按 Esc 或点击空白区域' }
                 ],
                 [
@@ -421,7 +423,7 @@
                                 if (app.project.nodes[nid]) { sumY += app.project.nodes[nid].y; countY++; }
                             });
                             if (!countY) return;
-                            var avgY = Math.round(sumY / countY);
+                            var avgY = roundCoord(sumY / countY);
                             nList.forEach(function (nid) {
                                 if (app.project.nodes[nid]) app.project.nodes[nid].y = avgY;
                             });
@@ -440,7 +442,7 @@
                                 if (app.project.nodes[nid]) { sumX += app.project.nodes[nid].x; countX++; }
                             });
                             if (!countX) return;
-                            var avgX = Math.round(sumX / countX);
+                            var avgX = roundCoord(sumX / countX);
                             nList.forEach(function (nid) {
                                 if (app.project.nodes[nid]) app.project.nodes[nid].x = avgX;
                             });
@@ -448,6 +450,14 @@
                             renderAll();
                             showToast('已将选中 ' + countX + ' 座车站垂直对齐 (X: ' + avgX + ')');
                         }
+                    },
+                    {
+                        label: '水平等距', icon: 'sort',
+                        onClick: function () { distributeNodesEvenly('x'); }
+                    },
+                    {
+                        label: '垂直等距', icon: 'align',
+                        onClick: function () { distributeNodesEvenly('y'); }
                     },
                     {
                         label: '批量删除', danger: true, icon: 'delete',
@@ -499,6 +509,37 @@
                 }
             });
         });
+    }
+
+    /**
+     * 多选车站沿某一轴等距排布：首尾两座保持不动，中间各站放到等分点上。
+     * axis = 'x' → 水平等距（各站 X 间距相等）；axis = 'y' → 垂直等距（各站 Y 间距相等）。
+     * 与「水平/垂直对齐」一样走历史快照，并把移动后的坐标同步进折线端点。
+     */
+    function distributeNodesEvenly(axis) {
+        var nodeIds = (app.selected && app.selected.type === 'multi') ? (app.selected.nodeIds || []) : [];
+        var movable = nodeIds.filter(function (nid) { return !!app.project.nodes[nid]; });
+        var axisName = axis === 'y' ? '垂直' : '水平';
+        if (movable.length < 3) {
+            showToast('等距排布至少要选中 3 座车站（当前 ' + movable.length + ' 座）');
+            return;
+        }
+        // 按该轴坐标排序，首尾固定
+        movable.sort(function (a, b) { return app.project.nodes[a][axis] - app.project.nodes[b][axis]; });
+        var first = app.project.nodes[movable[0]][axis];
+        var last = app.project.nodes[movable[movable.length - 1]][axis];
+        if (Math.abs(last - first) < 1) {
+            showToast(axisName + '方向上首尾两站坐标重合，无法等距排布');
+            return;
+        }
+        window.OpenMapEditor.HistoryManager.pushSnapshot(app.project);
+        var step = (last - first) / (movable.length - 1);
+        movable.forEach(function (nid, i) {
+            app.project.nodes[nid][axis] = roundCoord(first + step * i);
+        });
+        syncSegmentsForNodes(movable);
+        renderAll();
+        showToast('已将 ' + movable.length + ' 座车站' + axisName + '等距排布（间距 ' + roundCoord(step) + 'px，首尾未动）');
     }
 
     /**
@@ -654,6 +695,70 @@
     }
 
     /**
+     * 从工程里彻底删除一座车站：摘出所有线路站序（含分支 way）与配套站距、
+     * 解除折线端点的 nid 绑定（保留原走向，避免线网被拉变形）、移除虚拟换乘，
+     * 最后删除节点本身。车站删除的单选 / 多选 / 折线端头三条路径共用它。
+     * @returns {boolean} 是否真的删掉了
+     */
+    function deleteStationById(nodeId) {
+        if (!app.project || !app.project.nodes || !app.project.nodes[nodeId]) return false;
+
+        (app.project.lines || []).forEach(function (l) {
+            var idsKeys = Object.keys(l).filter(function (k) { return /^stationIds(-|$)/.test(k); });
+            idsKeys.forEach(function (idsKey) {
+                if (!Array.isArray(l[idsKey])) return;
+                var idx = l[idsKey].indexOf(nodeId);
+                if (idx === -1) return;
+                l[idsKey].splice(idx, 1);
+                var distKey = idsKey === 'stationIds' ? 'distances' : ('distances-' + idsKey.replace('stationIds-', ''));
+                if (Array.isArray(l[distKey]) && l[distKey].length >= l[idsKey].length) {
+                    l[distKey].splice(Math.min(idx, l[distKey].length - 1), 1);
+                }
+            });
+        });
+
+        // 只解除绑定、不删折点：折点是走向的一部分，删掉会让线路变形
+        (app.project.segments || []).forEach(function (seg) {
+            (seg.points || []).forEach(function (p) {
+                if (p.nid === nodeId) delete p.nid;
+            });
+        });
+
+        app.project.virtualConnectors = (app.project.virtualConnectors || []).filter(function (conn) {
+            return conn.from !== nodeId && conn.to !== nodeId;
+        });
+
+        delete app.project.nodes[nodeId];
+        return true;
+    }
+
+    /**
+     * 判断删除线段上某个折点该怎么落地（纯函数，便于自检）：
+     *   'interior' 中间折点 → 直接删，两端拉直
+     *   'station'  端头折点上是车站 → 要删的其实是那座车站
+     *   'splice'   端头自由折点 → 直接删（删完仍剩 ≥2 点）
+     *   'refuse'   端头自由折点但删完只剩 1 点 → 拒绝，应改删整条线段
+     *   'invalid'  索引越界
+     */
+    function planPointDeletion(seg, idx) {
+        var pts = (seg && seg.points) || [];
+        if (typeof idx !== 'number' || idx < 0 || idx >= pts.length) return 'invalid';
+        if (idx !== 0 && idx !== pts.length - 1) return 'interior';
+        if (pts[idx] && pts[idx].nid) return 'station';
+        return pts.length > 2 ? 'splice' : 'refuse';
+    }
+
+    /**
+     * 坐标统一保留 2 位小数。
+     * 城市数据里本来就有小数坐标（如 742.86 / 1033.89），编辑器必须能编辑这种值：
+     * 取整到整数会让「拖一点、输个 .5」全部失效，并把这些坐标永久抹平。
+     * 保留 2 位既贴合源文件书写精度，又能去掉浮点噪声（742.8600000000001）。
+     */
+    function roundCoord(v) {
+        return Math.round(Number(v) * 100) / 100;
+    }
+
+    /**
      * 选中属性变更回调
      */
     function handlePropertyChange(targetType, targetId, prop, value) {
@@ -681,35 +786,8 @@
                     if (!ok) return;
                 }
 
-                // 从所有线路 stationIds 中平滑摘除并维护 distances
-                (app.project.lines || []).forEach(function (l) {
-                    ['stationIds'].concat(Object.keys(l).filter(function (k) { return /^stationIds-/.test(k); })).forEach(function (idsKey) {
-                        if (Array.isArray(l[idsKey])) {
-                            var idx = l[idsKey].indexOf(targetId);
-                            if (idx !== -1) {
-                                l[idsKey].splice(idx, 1);
-                                var distKey = idsKey === 'stationIds' ? 'distances' : ('distances-' + idsKey.replace('stationIds-', ''));
-                                if (Array.isArray(l[distKey]) && l[distKey].length >= l[idsKey].length) {
-                                    l[distKey].splice(Math.min(idx, l[distKey].length - 1), 1);
-                                }
-                            }
-                        }
-                    });
-                });
-
-                // 解除线段点中的 nid 绑定
-                (app.project.segments || []).forEach(function (seg) {
-                    (seg.points || []).forEach(function (p) {
-                        if (p.nid === targetId) delete p.nid;
-                    });
-                });
-
-                // 移除虚拟换乘连线
-                app.project.virtualConnectors = (app.project.virtualConnectors || []).filter(function (conn) {
-                    return conn.from !== targetId && conn.to !== targetId;
-                });
-
-                delete app.project.nodes[targetId];
+                // 从所有线路 stationIds（含分支 way）、折线端点与虚拟换乘里平滑摘除
+                deleteStationById(targetId);
                 app.selected = null;
                 showToast('已安全删除车站并平滑自愈拓扑线路');
             } else if (prop === 'reorder_line_station') {
@@ -760,13 +838,13 @@
                     }
                 }
             } else if (prop === 'position') {
-                node.x = value.x;
-                node.y = value.y;
+                node.x = roundCoord(value.x);
+                node.y = roundCoord(value.y);
                 // 同步更新绑定线段端点
                 app.project.segments.forEach(function (seg) {
                     var pts = seg.points;
-                    if (pts[0].nid === targetId) { pts[0].x = value.x; pts[0].y = value.y; }
-                    if (pts[pts.length - 1].nid === targetId) { pts[pts.length - 1].x = value.x; pts[pts.length - 1].y = value.y; }
+                    if (pts[0].nid === targetId) { pts[0].x = node.x; pts[0].y = node.y; }
+                    if (pts[pts.length - 1].nid === targetId) { pts[pts.length - 1].x = node.x; pts[pts.length - 1].y = node.y; }
                 });
             } else if (prop === 'align') {
                 node.align = value;
@@ -817,21 +895,38 @@
             } else if (prop === 'point_position') {
                 var pIdx2 = value.pointIdx;
                 if (seg.points && seg.points[pIdx2]) {
-                    seg.points[pIdx2].x = value.x;
-                    seg.points[pIdx2].y = value.y;
+                    seg.points[pIdx2].x = roundCoord(value.x);
+                    seg.points[pIdx2].y = roundCoord(value.y);
                     if (seg.points[pIdx2].nid && app.project.nodes[seg.points[pIdx2].nid]) {
-                        app.project.nodes[seg.points[pIdx2].nid].x = value.x;
-                        app.project.nodes[seg.points[pIdx2].nid].y = value.y;
+                        app.project.nodes[seg.points[pIdx2].nid].x = seg.points[pIdx2].x;
+                        app.project.nodes[seg.points[pIdx2].nid].y = seg.points[pIdx2].y;
                     }
                 }
             } else if (prop === 'delete_point') {
                 var pIdx3 = value.pointIdx;
-                if (seg.points && pIdx3 > 0 && pIdx3 < seg.points.length - 1) {
+                var plan = planPointDeletion(seg, pIdx3);
+                if (plan === 'invalid') {
+                    showToast('这个折点已不存在，请重新选择');
+                } else if (plan === 'interior') {
                     seg.points.splice(pIdx3, 1);
-                    if (app.selected && app.selected.type === 'segment') {
-                        app.selected.pointIdx = null;
-                    }
+                    if (app.selected && app.selected.type === 'segment') app.selected.pointIdx = null;
                     showToast('已删除折点并拉直线段');
+                } else if (plan === 'station') {
+                    // 端头折点本身就是车站：删折点的本意是删站，但要讲清它连站一起摘掉
+                    var endNid = seg.points[pIdx3].nid;
+                    var endNode = app.project.nodes[endNid];
+                    var endName = (endNode && endNode.cn) || endNid;
+                    if (window.confirm('这个端头折点就是车站「' + endName + '」。\n删除会同时把该车站从所有线路站序中摘除，确定删除吗？')) {
+                        deleteStationById(endNid);
+                        app.selected = { type: 'segment', id: seg.id };
+                        showToast('已删除端头车站「' + endName + '」，线路保留原走向');
+                    }
+                } else if (plan === 'splice') {
+                    seg.points.splice(pIdx3, 1);
+                    if (app.selected && app.selected.type === 'segment') app.selected.pointIdx = null;
+                    showToast('已删除端头折点');
+                } else {
+                    showToast('这是线段仅剩两端的折点之一：再删就只剩一个点，请改用「删除此线段」');
                 }
             }
         }
@@ -1095,34 +1190,94 @@
             window.OpenMapEditor.ViewportLayer.zoomToPoint(val, window.innerWidth / 2, window.innerHeight / 2);
         });
 
-        // 网格显示切换
-        var gridBtn = document.getElementById('hudBtnGrid');
-        if (gridBtn) gridBtn.addEventListener('click', function () {
-            app.gridVisible = !app.gridVisible;
-            gridBtn.classList.toggle('active', app.gridVisible);
-            if (window.OpenMapEditor.GridLayer) {
-                window.OpenMapEditor.GridLayer.setVisible(app.gridVisible);
-            }
-            if (window.OpenMapEditor.ViewportLayer && window.OpenMapEditor.ViewportLayer.setGrid) {
-                window.OpenMapEditor.ViewportLayer.setGrid(app.gridVisible);
-            }
-            showToast(app.gridVisible ? '已显示网格' : '已隐藏网格');
-        });
+        // ------------------------------------------------------------------
+        // 网格与吸附：HUD 浮动按钮、功能区「网格与吸附」组共享同一套状态，
+        // 并记住上次的开关与间距（localStorage，刷新后保持）
+        // ------------------------------------------------------------------
+        var GRID_PREF = {
+            visible: 'openmap_editor_grid_visible',
+            size: 'openmap_editor_grid_size'
+        };
 
-        // 吸附开关
-        var snapBtn = document.getElementById('hudBtnSnap');
-        if (snapBtn) snapBtn.addEventListener('click', function () {
-            app.snapEnabled = !app.snapEnabled;
-            snapBtn.classList.toggle('active', app.snapEnabled);
-            if (window.OpenMapEditor.ViewportLayer) {
-                if (window.OpenMapEditor.ViewportLayer.setSnap) {
-                    window.OpenMapEditor.ViewportLayer.setSnap(app.snapEnabled);
-                } else if (window.OpenMapEditor.ViewportLayer.setSnapEnabled) {
-                    window.OpenMapEditor.ViewportLayer.setSnapEnabled(app.snapEnabled);
-                }
+        function readGridPrefs() {
+            try {
+                var vis = localStorage.getItem(GRID_PREF.visible);
+                if (vis !== null) app.gridVisible = (vis === '1');
+                var size = parseFloat(localStorage.getItem(GRID_PREF.size));
+                if (isFinite(size) && size > 0) app.gridSize = size;
+            } catch (e) { /* 隐私模式下忽略 */ }
+        }
+
+        /** 把 app 里的网格/吸附状态同步到图层与所有按钮（唯一真源） */
+        function applyGridState(persist) {
+            var vp = window.OpenMapEditor.ViewportLayer;
+            var gl = window.OpenMapEditor.GridLayer;
+            if (gl) {
+                if (typeof gl.setGridSize === 'function') gl.setGridSize(app.gridSize);
+                if (typeof gl.setVisible === 'function') gl.setVisible(app.gridVisible);
             }
-            showToast(app.snapEnabled ? '已开启吸附' : '已关闭吸附');
-        });
+            if (vp) {
+                if (typeof vp.setGridSize === 'function') vp.setGridSize(app.gridSize);
+                if (typeof vp.setGrid === 'function') vp.setGrid(app.gridVisible);
+                if (typeof vp.setSnap === 'function') vp.setSnap(app.snapEnabled);
+                else if (typeof vp.setSnapEnabled === 'function') vp.setSnapEnabled(app.snapEnabled);
+            }
+            [['hudBtnGrid', app.gridVisible], ['btnToggleGrid', app.gridVisible],
+                ['hudBtnSnap', app.snapEnabled], ['btnToggleSnap', app.snapEnabled]]
+                .forEach(function (pair) {
+                    var el = document.getElementById(pair[0]);
+                    if (el) el.classList.toggle('active', !!pair[1]);
+                });
+            var sel = document.getElementById('gridSizeSelect');
+            if (sel && String(sel.value) !== String(app.gridSize)) sel.value = String(app.gridSize);
+            if (persist !== false) {
+                try {
+                    localStorage.setItem(GRID_PREF.visible, app.gridVisible ? '1' : '0');
+                    localStorage.setItem(GRID_PREF.size, String(app.gridSize));
+                } catch (e) { /* 忽略配额/隐私模式错误 */ }
+            }
+        }
+
+        function setGridVisible(visible) {
+            app.gridVisible = !!visible;
+            applyGridState();
+            showToast(app.gridVisible
+                ? '已显示网格（间距 ' + app.gridSize + 'px，缩放时自动稀疏）'
+                : '已隐藏网格');
+        }
+
+        function setSnapEnabled(enabled) {
+            app.snapEnabled = !!enabled;
+            applyGridState();
+            showToast(app.snapEnabled
+                ? '已开启网格吸附（步长 ' + app.gridSize + 'px；拖动时按住 Alt 可临时绕过）'
+                : '已关闭网格吸附');
+        }
+
+        function setGridSize(size) {
+            var g = Number(size);
+            if (!(g > 0)) return;
+            app.gridSize = g;
+            applyGridState();
+            showToast('网格间距已设为 ' + g + 'px' + (app.gridVisible ? '' : '（网格当前隐藏）'));
+        }
+
+        // 启动时恢复上次的状态
+        readGridPrefs();
+        applyGridState(false);
+
+        var hudGridBtn = document.getElementById('hudBtnGrid');
+        if (hudGridBtn) hudGridBtn.addEventListener('click', function () { setGridVisible(!app.gridVisible); });
+        var hudSnapBtn = document.getElementById('hudBtnSnap');
+        if (hudSnapBtn) hudSnapBtn.addEventListener('click', function () { setSnapEnabled(!app.snapEnabled); });
+
+        var rbnGridBtn = document.getElementById('btnToggleGrid');
+        if (rbnGridBtn) rbnGridBtn.addEventListener('click', function () { setGridVisible(!app.gridVisible); });
+        var rbnSnapBtn = document.getElementById('btnToggleSnap');
+        if (rbnSnapBtn) rbnSnapBtn.addEventListener('click', function () { setSnapEnabled(!app.snapEnabled); });
+
+        var gridSizeSel = document.getElementById('gridSizeSelect');
+        if (gridSizeSel) gridSizeSel.addEventListener('change', function () { setGridSize(this.value); });
 
         // 大纲与检视面板折叠/展开与多端状态联动
         var navDrawer = document.getElementById('workbenchNavDrawer');
@@ -1390,19 +1545,19 @@
                 var dx = app.project.canvas.width / 2 - cx;
                 var dy = app.project.canvas.height / 2 - cy;
                 ids.forEach(function (id) {
-                    nodes[id].x = Math.round(nodes[id].x + dx);
-                    nodes[id].y = Math.round(nodes[id].y + dy);
+                    nodes[id].x = roundCoord(nodes[id].x + dx);
+                    nodes[id].y = roundCoord(nodes[id].y + dy);
                 });
                 // 同步线段点
                 (app.project.segments || []).forEach(function (seg) {
                     (seg.points || []).forEach(function (p) {
-                        p.x = Math.round(p.x + dx);
-                        p.y = Math.round(p.y + dy);
+                        p.x = roundCoord(p.x + dx);
+                        p.y = roundCoord(p.y + dy);
                     });
                 });
 
                 renderAll();
-                showToast('几何校准完成 (偏移 Δx=' + Math.round(dx) + ', Δy=' + Math.round(dy) + ')', 'success');
+                showToast('几何校准完成 (偏移 Δx=' + roundCoord(dx) + ', Δy=' + roundCoord(dy) + ')', 'success');
             } catch (err) {
                 showToast('校准失败: ' + (err.message || err), 'error');
             }
@@ -1793,7 +1948,7 @@
         viewportEl.addEventListener('mousemove', function (e) {
             var world = window.OpenMapEditor.ViewportLayer.screenToWorld(e.clientX, e.clientY);
             var coordEl = document.getElementById('cursorCoordinates');
-            if (coordEl) coordEl.textContent = 'X: ' + Math.round(world.x) + ', Y: ' + Math.round(world.y);
+            if (coordEl) coordEl.textContent = 'X: ' + roundCoord(world.x) + ', Y: ' + roundCoord(world.y);
 
             // 车站模式下的智能吸附高亮投影
             if (app.activeTool === 'station') {
@@ -1847,8 +2002,8 @@
                     var nList = app.selected.nodeIds || [];
                     nList.forEach(function (nid) {
                         if (initialMultiPositions[nid] && app.project.nodes[nid]) {
-                            app.project.nodes[nid].x = Math.round(initialMultiPositions[nid].x + dX);
-                            app.project.nodes[nid].y = Math.round(initialMultiPositions[nid].y + dY);
+                            app.project.nodes[nid].x = roundCoord(initialMultiPositions[nid].x + dX);
+                            app.project.nodes[nid].y = roundCoord(initialMultiPositions[nid].y + dY);
                         }
                     });
                     syncSegmentsForNodes(nList);
@@ -1861,9 +2016,9 @@
             if (isDraggingPoint && draggedSegId && draggedPointIdx !== null) {
                 var dragSeg = (app.project.segments || []).find(function (s) { return s.id === draggedSegId; });
                 if (dragSeg && dragSeg.points && dragSeg.points[draggedPointIdx]) {
-                    var snappedPt = app.snapEnabled
+                    var snappedPt = app.snapEnabled && !e.altKey
                         ? window.OpenMapEditor.ViewportLayer.snapPoint(world.x, world.y)
-                        : { x: world.x, y: world.y };
+                        : { x: roundCoord(world.x), y: roundCoord(world.y) };
 
                     if (!hasDragged) {
                         var dStartPt = dragStartPos || snappedPt;
@@ -1897,9 +2052,9 @@
 
             // 2. 拖动节点移动 (带智能对齐参考线与正交导轨协同推移)
             if (isDraggingNode && draggedNodeId && app.project.nodes[draggedNodeId]) {
-                var snapped = app.snapEnabled
+                var snapped = app.snapEnabled && !e.altKey
                     ? window.OpenMapEditor.ViewportLayer.snapPoint(world.x, world.y)
-                    : { x: world.x, y: world.y };
+                    : { x: roundCoord(world.x), y: roundCoord(world.y) };
 
                 // 智能参考线 Smart Alignment Guides 探测 (4~5px 吸附)
                 var scale = window.OpenMapEditor.ViewportLayer.getScale() || 1;
@@ -1916,7 +2071,7 @@
                             pos: otherNode.x,
                             from: Math.min(snapped.y, otherNode.y) - 30,
                             to: Math.max(snapped.y, otherNode.y) + 30,
-                            label: (otherNode.cn || otherId) + ' X:' + Math.round(otherNode.x)
+                            label: (otherNode.cn || otherId) + ' X:' + roundCoord(otherNode.x)
                         });
                     }
                     if (Math.abs(snapped.y - otherNode.y) <= snapTol) {
@@ -1926,7 +2081,7 @@
                             pos: otherNode.y,
                             from: Math.min(snapped.x, otherNode.x) - 30,
                             to: Math.max(snapped.x, otherNode.x) + 30,
-                            label: (otherNode.cn || otherId) + ' Y:' + Math.round(otherNode.y)
+                            label: (otherNode.cn || otherId) + ' Y:' + roundCoord(otherNode.y)
                         });
                     }
                 });
@@ -1984,6 +2139,10 @@
         viewportEl.addEventListener('mousedown', function (e) {
             if (e.target.closest('.viewport-hud')) return;
 
+            // 只有左键参与选中 / 拖拽。中键（漫游键）与空格拖拽归 ViewportLayer 平移，
+            // 右键不参与选中 —— 否则中键一点车站就被选中，拖动变成了「中键选中」。
+            if (e.button !== 0 || viewportEl.classList.contains('panning')) return;
+
             // 1. 点击折点控制手柄 (Vertex Handle)
             var targetPointHandle = e.target.closest('.segment-point-handle');
             if (targetPointHandle && (app.activeTool === 'select' || app.activeTool === 'points')) {
@@ -2009,7 +2168,7 @@
                 if (midSeg && midSeg.points && insAfter >= 0 && insAfter < midSeg.points.length - 1) {
                     window.OpenMapEditor.HistoryManager.pushSnapshot(app.project);
                     var pA = midSeg.points[insAfter], pB = midSeg.points[insAfter + 1];
-                    var newPt = { x: Math.round((pA.x + pB.x) / 2), y: Math.round((pA.y + pB.y) / 2) };
+                    var newPt = { x: roundCoord((pA.x + pB.x) / 2), y: roundCoord((pA.y + pB.y) / 2) };
                     midSeg.points.splice(insAfter + 1, 0, newPt);
                     app.selected = { type: 'segment', id: midSegId, pointIdx: insAfter + 1 };
                     isDraggingPoint = true;
@@ -2188,9 +2347,9 @@
                         return;
                     }
                 }
-                var snapped = app.snapEnabled
+                var snapped = app.snapEnabled && !e.altKey
                     ? window.OpenMapEditor.ViewportLayer.snapPoint(world.x, world.y)
-                    : { x: world.x, y: world.y };
+                    : { x: roundCoord(world.x), y: roundCoord(world.y) };
                 var result = window.OpenMapEditor.PipelineDraw.handleCanvasClick(app.project, snapped, null);
                 if (result.updated) {
                     if (result.createdId) app.selected = { type: 'node', id: result.createdId };
@@ -2201,9 +2360,9 @@
 
             if (app.activeTool !== 'select' && app.activeTool !== 'points' && app.activeTool !== 'box') {
                 var world = window.OpenMapEditor.ViewportLayer.screenToWorld(e.clientX, e.clientY);
-                var snapped = app.snapEnabled
+                var snapped = app.snapEnabled && !e.altKey
                     ? window.OpenMapEditor.ViewportLayer.snapPoint(world.x, world.y)
-                    : { x: world.x, y: world.y };
+                    : { x: roundCoord(world.x), y: roundCoord(world.y) };
                 var targetNodeEl = e.target.closest('[data-node-id]');
                 var targetNid = targetNodeEl ? targetNodeEl.getAttribute('data-node-id') : null;
 
@@ -2241,7 +2400,10 @@
 
             // 方向键步进平移 (1px，Shift + 方向键 10px)
             if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].indexOf(e.code) !== -1) {
-                if (app.selected && (app.selected.type === 'node' || app.selected.type === 'multi')) {
+                // 站点 / 多选站点 / 线段折点（线路转角节点）都支持方向键步进
+                var arrowOnPoint = !!(app.selected && app.selected.type === 'segment' &&
+                    app.selected.pointIdx !== null && app.selected.pointIdx !== undefined);
+                if (app.selected && (app.selected.type === 'node' || app.selected.type === 'multi' || arrowOnPoint)) {
                     e.preventDefault();
                     var step = e.shiftKey ? 10 : 1;
                     var dX = 0, dY = 0;
@@ -2250,15 +2412,32 @@
                     else if (e.code === 'ArrowLeft') dX = -step;
                     else if (e.code === 'ArrowRight') dX = step;
 
+                    if (arrowOnPoint) {
+                        // 线路转角节点：直接移动该折点；若折点挂着车站，站点与其它线段端点一起跟随
+                        var arrowSeg = (app.project.segments || []).find(function (s) { return s.id === app.selected.id; });
+                        var arrowPt = arrowSeg && arrowSeg.points && arrowSeg.points[app.selected.pointIdx];
+                        if (arrowPt) {
+                            arrowPt.x = roundCoord(arrowPt.x + dX);
+                            arrowPt.y = roundCoord(arrowPt.y + dY);
+                            if (arrowPt.nid && app.project.nodes[arrowPt.nid]) {
+                                app.project.nodes[arrowPt.nid].x = arrowPt.x;
+                                app.project.nodes[arrowPt.nid].y = arrowPt.y;
+                                syncSegmentsForNodes([arrowPt.nid]);
+                            }
+                            window.OpenMapEditor.HistoryManager.pushSnapshot(app.project);
+                            renderAll();
+                        }
+                        return;
+                    }
                     if (app.selected.type === 'node' && app.project.nodes[app.selected.id]) {
-                        app.project.nodes[app.selected.id].x += dX;
-                        app.project.nodes[app.selected.id].y += dY;
+                        app.project.nodes[app.selected.id].x = roundCoord(app.project.nodes[app.selected.id].x + dX);
+                        app.project.nodes[app.selected.id].y = roundCoord(app.project.nodes[app.selected.id].y + dY);
                         syncSegmentsForNodes([app.selected.id]);
                     } else if (app.selected.type === 'multi') {
                         (app.selected.nodeIds || []).forEach(function (nid) {
                             if (app.project.nodes[nid]) {
-                                app.project.nodes[nid].x += dX;
-                                app.project.nodes[nid].y += dY;
+                                app.project.nodes[nid].x = roundCoord(app.project.nodes[nid].x + dX);
+                                app.project.nodes[nid].y = roundCoord(app.project.nodes[nid].y + dY);
                             }
                         });
                         syncSegmentsForNodes(app.selected.nodeIds);

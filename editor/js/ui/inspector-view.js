@@ -205,8 +205,8 @@ window.OpenMapEditor.InspectorView = (function () {
         html += '<div class="form-row" style="margin-top:10px;">' +
             '<span class="form-label">坐标位置:</span>' +
             '<div style="display:flex;gap:4px;flex:1;">' +
-            '<input type="number" class="form-input" id="propNodeX" value="' + Math.round(node.x) + '">' +
-            '<input type="number" class="form-input" id="propNodeY" value="' + Math.round(node.y) + '">' +
+            '<input type="number" class="form-input" id="propNodeX" step="0.01" value="' + fmtCoord(node.x) + '">' +
+            '<input type="number" class="form-input" id="propNodeY" step="0.01" value="' + fmtCoord(node.y) + '">' +
             '</div></div>';
 
         html += '<button type="button" class="ribbon-btn-sm danger" id="btnDeleteSelected" style="margin-top:10px;">' +
@@ -379,8 +379,8 @@ window.OpenMapEditor.InspectorView = (function () {
                 '<div class="form-row">' +
                 '<span class="form-label">折点坐标:</span>' +
                 '<div style="display:flex;gap:4px;flex:1;">' +
-                '<input type="number" class="form-input" id="propPointX" value="' + Math.round(activePoint.x) + '">' +
-                '<input type="number" class="form-input" id="propPointY" value="' + Math.round(activePoint.y) + '">' +
+                '<input type="number" class="form-input" id="propPointX" step="0.01" value="' + fmtCoord(activePoint.x) + '">' +
+                '<input type="number" class="form-input" id="propPointY" step="0.01" value="' + fmtCoord(activePoint.y) + '">' +
                 '</div></div>' +
                 '<div class="form-row" style="margin-top:6px;">' +
                 '<span class="form-label">拐角半径:</span>' +
@@ -395,9 +395,26 @@ window.OpenMapEditor.InspectorView = (function () {
                 '<span id="propCornerRadiusVal" style="font-size:11px;min-width:32px;text-align:right;">' + curR + 'px</span>' +
                 '</div>';
 
-            if (!activePoint.nid && selPtIdx > 0 && selPtIdx < pts.length - 1) {
-                html += '<button type="button" class="ribbon-btn-sm danger" id="btnDeleteSelectedPoint" style="margin-top:8px;width:100%;">' +
-                    '<cgo-icon name="delete" size="12"></cgo-icon><span>删除此折点 (拉直)</span></button>';
+            // 折点删除按钮：中间折点=拉直，端头折点=截断；端头若挂着车站则提示会连站一起删
+            if (selPtIdx >= 0 && selPtIdx < pts.length) {
+                var isEndPt = (selPtIdx === 0 || selPtIdx === pts.length - 1);
+                var delPointStyle = 'margin-top:8px;width:100%;';
+                if (!isEndPt) {
+                    html += '<button type="button" class="ribbon-btn-sm danger" id="btnDeleteSelectedPoint" style="' + delPointStyle + '">' +
+                        '<cgo-icon name="delete" size="12"></cgo-icon><span>删除此折点 (拉直)</span></button>';
+                } else if (activePoint.nid) {
+                    html += '<button type="button" class="ribbon-btn-sm danger" id="btnDeleteSelectedPoint" style="' + delPointStyle + '"' +
+                        ' title="这个端头折点就是车站，删除会同时把它从所有线路站序中摘除">' +
+                        '<cgo-icon name="delete" size="12"></cgo-icon><span>删除端头车站</span></button>';
+                } else if (pts.length > 2) {
+                    html += '<button type="button" class="ribbon-btn-sm danger" id="btnDeleteSelectedPoint" style="' + delPointStyle + '"' +
+                        ' title="删除这个端头折点，线段从新的端点结束，走向不做拉直">' +
+                        '<cgo-icon name="delete" size="12"></cgo-icon><span>删除端头折点</span></button>';
+                } else {
+                    html += '<button type="button" class="ribbon-btn-sm" id="btnDeleteSelectedPoint" style="' + delPointStyle + '" disabled' +
+                        ' title="线段只剩两个端点，再删就只剩一个点：请改用下方「删除此线段」">' +
+                        '<cgo-icon name="delete" size="12"></cgo-icon><span>端头折点不可删</span></button>';
+                }
             }
             html += '</div>';
         } else {
@@ -503,6 +520,12 @@ window.OpenMapEditor.InspectorView = (function () {
     /**
      * 通用图元检视面板（用于虚拟换乘、在建走向、地点地标、水域、文本等）
      */
+    /** 坐标显示：最多 2 位小数，整数不带 ".0" */
+    function fmtCoord(v) {
+        var n = Math.round(Number(v) * 100) / 100;
+        return isFinite(n) ? String(n) : '0';
+    }
+
     function renderGenericInspector(title, iconName, fields, actions) {
         if (!dom.body) return;
         var html = '<div class="inspector-section">' +
@@ -519,9 +542,10 @@ window.OpenMapEditor.InspectorView = (function () {
         });
 
         if (actions && actions.length) {
-            html += '<div class="form-row" style="margin-top:12px;gap:6px;">';
+            // 操作按钮超过一行时折行（多选面板有对齐 / 等距 / 删除等多个动作）
+            html += '<div class="form-row" style="margin-top:12px;gap:6px;flex-wrap:wrap;">';
             actions.forEach(function (act, i) {
-                html += '<button type="button" class="ribbon-btn-sm ' + (act.danger ? 'danger' : '') + '" id="btnInspectorGenericAct_' + i + '" style="flex:1;">' +
+                html += '<button type="button" class="ribbon-btn-sm ' + (act.danger ? 'danger' : '') + '" id="btnInspectorGenericAct_' + i + '" style="flex:1 1 30%;min-width:82px;">' +
                     (act.icon ? '<cgo-icon name="' + act.icon + '" size="12"></cgo-icon>' : '') +
                     '<span>' + act.label + '</span></button>';
             });

@@ -282,17 +282,67 @@ window.OpenMapEditor.ViewportLayer = (function () {
 
         dom.viewport.addEventListener('wheel', onWheel, { passive: false });
 
-        // 漫游拖拽支持（中键或按住空格拖拽）
+        // ------------------------------------------------------------------
+        // 漫游拖拽：中键，或按住空格 + 左键
+        // （此前只有光标类、没有拖拽实现，中键会一路落到 editor-app 的选中逻辑上，
+        //   表现为「中键拖动变成中键选中」；详见 bindCanvasInteractions 的按键守卫）
+        // ------------------------------------------------------------------
+        var spaceHeld = false;
+        var panDrag = null;
+
+        function setPanCursor(on) {
+            if (!dom.viewport) return;
+            dom.viewport.classList.toggle('panning', !!on || spaceHeld);
+        }
+
         window.addEventListener('keydown', function (e) {
             if (e.code === 'Space' && !e.target.matches('input, textarea, select')) {
-                dom.viewport.classList.add('panning');
+                spaceHeld = true;
+                setPanCursor(true);
+                e.preventDefault();          // 空格在画布上是漫游键，不要滚动页面
             }
         });
 
         window.addEventListener('keyup', function (e) {
             if (e.code === 'Space') {
-                dom.viewport.classList.remove('panning');
+                spaceHeld = false;
+                if (!panDrag) setPanCursor(false);
             }
+        });
+
+        dom.viewport.addEventListener('mousedown', function (e) {
+            var wantPan = (e.button === 1) || (e.button === 0 && spaceHeld);
+            if (!wantPan) return;
+            if (e.target.closest('.viewport-hud')) return;
+            panDrag = {
+                startX: e.clientX, startY: e.clientY,
+                panX: state.pan.x, panY: state.pan.y
+            };
+            isPanning = true;
+            setPanCursor(true);
+            e.preventDefault();              // 压掉浏览器中键「自动滚动」圆钮与拖选文字
+        });
+
+        window.addEventListener('mousemove', function (e) {
+            if (!panDrag) return;
+            // 兜底：在窗口外松开鼠标时收不到 mouseup，避免平移「粘住」
+            if (e.buttons === 0) {
+                panDrag = null;
+                isPanning = false;
+                setPanCursor(false);
+                return;
+            }
+            state.pan.x = panDrag.panX + (e.clientX - panDrag.startX);
+            state.pan.y = panDrag.panY + (e.clientY - panDrag.startY);
+            applyTransform();
+        });
+
+        window.addEventListener('mouseup', function (e) {
+            if (!panDrag) return;
+            if (e.button !== 0 && e.button !== 1) return;
+            panDrag = null;
+            isPanning = false;
+            setPanCursor(false);             // 空格仍按住时 setPanCursor 会保留手形光标
         });
 
         // 响应窗口尺寸重排
