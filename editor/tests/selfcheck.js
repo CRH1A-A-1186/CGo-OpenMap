@@ -1182,6 +1182,102 @@ section('Milestone 3 多选框选与智能对齐参考线');
     const delPatch = PipelineSurgical.patchStationsSource(delCity.project);
     check(!delPatch.patchedSource.includes('"D2"') && !delPatch.patchedSource.includes("'D2'"), 'Bug2 Fix: 删除 D2 后回写源码中已不包含 D2 条目');
     check(delPatch.patchedSource.includes('"D1"') || delPatch.patchedSource.includes("'D1'"), 'Bug2 Fix: 未删除的 D1 仍完整保留在回写结果中');
+
+    // 8. Bug 3 fix: 车站回写曾用「稀疏 patch」（只带 x/y/cn/en）。键数与原条目不一致时
+    //    patchEntries 会回退成整条重写，把没进 patch 的字段整片删掉 —— 尤其是普通站的
+    //    type:"dot"（默认值不会进 patch）。type 一丢，引擎的 className 就没有尺寸类
+    //    （css 里只有 .dot/.tsf 这些类带 width/height），.station svg 的 width:100%
+    //    会把车站圆圈撑成巨大图元。这正是「写回后圆圈异常大」的根因。
+    const rawPlain = `const stationsData = {\n    "P1": {\n        type: "dot",\n        x: 100,\n        y: 200,\n        cn: "普通站",\n        en: "Plain",\n        offset: { x: 0, y: 0 },\n        textScale: { cn: 1.2, en: 1 },\n        marker: { parts: ["A"] }\n    }\n};\n`;
+    const plainCity = PipelineSurgical.init('plaincity', {
+        'data_stations.js': rawPlain,
+        'data_lines.js': 'const linesData = [];'
+    }, {
+        stationsData: {
+            P1: {
+                type: 'dot', x: 100, y: 200, cn: '普通站', en: 'Plain',
+                offset: { x: 0, y: 0 }, textScale: { cn: 1.2, en: 1 }, marker: { parts: ['A'] }
+            }
+        },
+        linesData: []
+    });
+    plainCity.project.nodes['P1'].x = 150;   // 只挪位置
+    const plainPatch = PipelineSurgical.patchStationsSource(plainCity.project);
+    check(/type\s*:\s*["']dot["']/.test(plainPatch.patchedSource),
+        'Bug3 Fix: 仅改坐标时普通站的 type:"dot" 不得丢失（丢失会让圆圈变巨大）');
+    check(/offset\s*:/.test(plainPatch.patchedSource), 'Bug3 Fix: 未改动的 offset 原样保留');
+    check(/textScale\s*:/.test(plainPatch.patchedSource), 'Bug3 Fix: 未改动的 textScale 原样保留');
+    check(/marker\s*:/.test(plainPatch.patchedSource), 'Bug3 Fix: 城市私有字段 marker 原样保留');
+    check(/x\s*:\s*150/.test(plainPatch.patchedSource), 'Bug3 Fix: 坐标改动依然生效');
+    check(!/\bid\s*:/.test(plainPatch.patchedSource) && !/textScale\s*:\s*null/.test(plainPatch.patchedSource),
+        'Bug3 Fix: 不得把编辑器内部字段（id / textScale:null）写进城市数据');
+
+    // 9. Bug 4 fix: 新增车站在源码里还没有键，update 会直接跳过 → 此前被静默丢弃，
+    //    而「在线插站」会同时在站序里插入该 ID，于是留下悬空引用。必须走 append。
+    const appendCity = PipelineSurgical.init('appendcity', {
+        'data_stations.js': rawPlain,
+        'data_lines.js': 'const linesData = [];'
+    }, {
+        stationsData: { P1: { type: 'dot', x: 100, y: 200, cn: '普通站', en: 'Plain' } },
+        linesData: []
+    });
+    appendCity.project.nodes['NEWST'] = { type: 'dot', x: 300, y: 400, cn: '新站', en: 'NewSt' };
+    const appendPatch = PipelineSurgical.patchStationsSource(appendCity.project);
+    check(appendPatch.patchedSource.includes('NEWST'), 'Bug4 Fix: 新增车站会追加写回（此前被静默丢弃）');
+    check(/type\s*:\s*["']dot["']/.test(appendPatch.patchedSource), 'Bug4 Fix: 追加后原有车站的 type 仍在');
+    check(/cn\s*:\s*["']新站["']/.test(appendPatch.patchedSource), 'Bug4 Fix: 追加的车站带上了站名');
+
+    // 10. Bug 5 fix: marker/halo 曾用引用比较（curr.marker !== orig.marker），快照是深拷贝，
+    //     于是只要车站带 marker（悉尼这类城市）就**全城判脏**——零编辑也整份重写源文件，
+    //     把人工排版全冲掉。必须按值比较。
+    const rawMarker = `const stationsData = {\n    "M1": { type: "dot", x: 10, y: 10, cn: "带标记站", en: "Mk", marker: { parts: [{ t: "stop", c: "#123456", w: 7, h: 7 }] } },\n    "M2": { type: "dot", x: 20, y: 20, cn: "无标记站", en: "Plain" }\n};\n`;
+    const markerCity = PipelineSurgical.init('markercity', {
+        'data_stations.js': rawMarker,
+        'data_lines.js': 'const linesData = [];'
+    }, {
+        stationsData: {
+            M1: { type: 'dot', x: 10, y: 10, cn: '带标记站', en: 'Mk', marker: { parts: [{ t: 'stop', c: '#123456', w: 7, h: 7 }] } },
+            M2: { type: 'dot', x: 20, y: 20, cn: '无标记站', en: 'Plain' }
+        },
+        linesData: []
+    });
+    check(Object.keys(PipelineSurgical.computeDirtyStations(markerCity.project)).length === 0,
+        'Bug5 Fix: 未做任何编辑时不得把带 marker 的车站判成脏（引用比较会导致全城重写）');
+    markerCity.project.nodes['M1'].x = 30;
+    const markerDirty = PipelineSurgical.computeDirtyStations(markerCity.project);
+    check(Object.keys(markerDirty).length === 1 && markerDirty['M1'].x === 30,
+        'Bug5 Fix: 真正改了坐标才判脏，且只脏这一座');
+    const markerPatch = PipelineSurgical.patchStationsSource(markerCity.project);
+    check(/marker\s*:/.test(markerPatch.patchedSource), 'Bug5 Fix: marker 字段在回写后仍然存在');
+
+    // 11. Bug 6 fix: 写回目录守卫。旧实现认不出目录时会静默回落到「用户选中的目录」，
+    //     选错文件夹（例如仓库根目录）就会把 data_stations.js 写到别的目录里。
+    //     现在必须先确认「目录名=城市 id 且存在 data_stations.js」，否则报错拒写。
+    const surgSrc = fs.readFileSync(path.join(ROOT, 'editor/js/pipelines/pipeline-surgical.js'), 'utf8');
+    const resolveBody = (surgSrc.match(/async function resolveCityDir[\s\S]*?\n    \}/) || [''])[0];
+    check(/getFileHandle\('data_stations\.js'\)/.test(resolveBody),
+        'Bug6 Fix: 写回前必须确认目标目录里有 data_stations.js');
+    check(/dir\.name !== expectName/.test(resolveBody),
+        'Bug6 Fix: 目标目录名必须与城市 id 一致（不能写进别的城市目录）');
+    check(!/return handle;\s*\n\s*\}\s*$/.test(resolveBody.replace(/\s+$/g, '')),
+        'Bug6 Fix: 认不出目录时不得静默回落到用户选中的目录');
+    check(/resolveCityDir: resolveCityDir/.test(surgSrc),
+        'Bug6 Fix: resolveCityDir 已对外暴露便于回归验证');
+
+    // 12. 网格显示功能：功能区入口 + 间距选择 + 状态持久化 + 图层联动
+    const editorHtmlSrc = fs.readFileSync(path.join(ROOT, 'editor/index.html'), 'utf8');
+    const editorAppSrc = fs.readFileSync(path.join(ROOT, 'editor/js/editor-app.js'), 'utf8');
+    check(/id="btnToggleGrid"/.test(editorHtmlSrc) && /id="gridSizeSelect"/.test(editorHtmlSrc),
+        'Grid: 功能区提供「网格」开关与「网格间距」下拉');
+    check(/id="gridLayer"/.test(editorHtmlSrc), 'Grid: 画布内存在独立的网格图层 #gridLayer');
+    check(/gl\.setVisible/.test(editorAppSrc) && /gl\.setGridSize/.test(editorAppSrc),
+        'Grid: 开关与间距会同步到 GridLayer（setVisible / setGridSize）');
+    check(/ViewportLayer\.setSnap|vp\.setSnap/.test(editorAppSrc) && /localStorage\.setItem\(GRID_PREF\.visible/.test(editorAppSrc),
+        'Grid: 吸附状态联动且网格开关会持久化');
+    check(/readGridPrefs\(\)/.test(editorAppSrc) && /applyGridState\(false\)/.test(editorAppSrc),
+        'Grid: 启动时读回上次的网格开关与间距');
+    check(/hudBtnGrid/.test(editorAppSrc) && /hudBtnSnap/.test(editorAppSrc),
+        'Grid: HUD 浮动按钮与功能区按钮共享同一套状态');
 }
 
 // ============================================================================
